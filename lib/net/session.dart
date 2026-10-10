@@ -7,6 +7,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../engine/bot.dart';
 import '../engine/game.dart';
 import 'discovery.dart';
 import 'protocol.dart';
@@ -55,7 +56,8 @@ class _Seat {
   final String token;
   LineConn? conn;
   bool auto = false; // отвечаем за игрока автоматически, пока он не вернётся
-  _Seat(this.id, this.name, this.token);
+  final bool bot;
+  _Seat(this.id, this.name, this.token, {this.bot = false});
 }
 
 class HostSession extends GameSession {
@@ -78,6 +80,7 @@ class HostSession extends GameSession {
   bool _flushScheduled = false;
   bool _closed = false;
   List<String> addresses = [];
+  final Random _rng = Random();
 
   static const _autoDelay = Duration(seconds: 40);
 
@@ -96,7 +99,7 @@ class HostSession extends GameSession {
     _broadcastLobby();
   }
 
-  bool _connected(_Seat s) => s.id == 0 || s.conn != null;
+  bool _connected(_Seat s) => s.id == 0 || s.bot || s.conn != null;
   _Seat? _seat(int id) {
     for (final s in _seats) {
       if (s.id == id) return s;
@@ -225,7 +228,7 @@ class HostSession extends GameSession {
         'host': myName,
         'expansion': expansion,
         'players': [
-          for (final s in _seats) {'id': s.id, 'name': s.name, 'connected': _connected(s)}
+          for (final s in _seats) {'id': s.id, 'name': s.name, 'connected': _connected(s), 'bot': s.bot}
         ],
       };
 
@@ -237,6 +240,30 @@ class HostSession extends GameSession {
     lobby = m;
     changed();
   }
+
+  static const _botNames = [
+    'Бот Джанго', 'Бот Кактус', 'Бот Шпора', 'Бот Мустанг', //
+    'Бот Койот', 'Бот Пончо', 'Бот Сорока', 'Бот Перекати-поле',
+  ];
+
+  bool get canAddBot => _game == null && _seats.length < maxPlayers;
+
+  void addBot() {
+    if (!canAddBot) return;
+    final used = _seats.map((s) => s.name).toSet();
+    final name = _botNames.firstWhere((n) => !used.contains(n), orElse: () => 'Бот $_nextId');
+    _seats.add(_Seat(_nextId++, name, '', bot: true));
+    _broadcastLobby();
+  }
+
+  void removeBot(int id) {
+    if (_game != null) return;
+    _seats.removeWhere((s) => s.id == id && s.bot);
+    _broadcastLobby();
+  }
+
+  /// Решение бота — по тому же виду стола, что видел бы игрок на этом месте.
+  Json _botAnswer(int pid, Json req) => BotBrain.decide(_game!.viewFor(pid), req, _rng);
 
   void setExpansion(bool v) {
     if (_game != null) return;
@@ -266,7 +293,7 @@ class HostSession extends GameSession {
   void forceSkip() {
     for (final id in _pendingReq.keys.where((id) => id != 0).toList()) {
       final req = _pendingReq[id];
-      if (req != null) _complete(id, Game.defaultResponse(req));
+      if (req != null) _complete(id, _botAnswer(id, req));
     }
   }
 
@@ -300,7 +327,14 @@ class HostSession extends GameSession {
       changed();
     } else {
       final s = _seat(pid);
-      if (s != null && s.conn != null && !s.auto) {
+      if (s != null && s.bot) {
+        // бот «думает» чуть меньше секунды, чтобы за его ходами можно было следить
+        final ms = req['type'] == 'turn' ? 700 + _rng.nextInt(600) : 450 + _rng.nextInt(500);
+        _autoTimers[pid] = Timer(Duration(milliseconds: ms), () {
+          if (_closed || _pendingReq[pid] != req) return;
+          _complete(pid, _botAnswer(pid, req));
+        });
+      } else if (s != null && s.conn != null && !s.auto) {
         s.conn!.send({'t': 'req', 'r': req});
       } else {
         _startAuto(pid);
@@ -327,7 +361,7 @@ class HostSession extends GameSession {
       final seat = _seat(pid);
       if (req == null || seat == null || seat.conn != null) return;
       seat.auto = true;
-      _complete(pid, Game.defaultResponse(req));
+      _complete(pid, _botAnswer(pid, req)); // за отключившегося играет бот
     });
   }
 
@@ -351,6 +385,10 @@ class HostSession extends GameSession {
     v['offline'] = [
       for (final s in _seats)
         if (!_connected(s)) s.id
+    ];
+    v['bots'] = [
+      for (final s in _seats)
+        if (s.bot) s.id
     ];
     return v;
   }

@@ -251,6 +251,7 @@ class _GameViewState extends State<GameView> {
     final isTarget = _sel?.targets.contains(id) ?? false;
     final waiting = (st['waiting'] as List).contains(id);
     final offline = ((st['offline'] as List?) ?? const []).contains(id);
+    final isBot = ((st['bots'] as List?) ?? const []).contains(id);
     final dist = p['dist'] as int?;
     final inRange = dist != null && dist <= (st['myRange'] as int);
     final table = (p['table'] as List).map((c) => CardInfo.fromJson(c as Map)).toList();
@@ -289,6 +290,7 @@ class _GameViewState extends State<GameView> {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
                   ),
+                  if (isBot) const Icon(Icons.smart_toy, size: 15, color: Pal.sand),
                   if (offline) const Icon(Icons.wifi_off, size: 15, color: Pal.blood),
                   if (waiting) const Icon(Icons.hourglass_bottom, size: 15, color: Pal.brass),
                 ],
@@ -817,7 +819,7 @@ class _GameViewState extends State<GameView> {
         title: const Text('Выйти из партии?'),
         content: Text(s.isHost
             ? 'Вы хост: партия закончится для всех игроков.'
-            : 'Пока вас нет, за вас будут автоматически пропускать ходы. Вернуться можно, снова подключившись к столу.'),
+            : 'Пока вас нет, за вас будет играть бот. Вернуться можно, снова подключившись к столу.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Остаться')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Выйти')),

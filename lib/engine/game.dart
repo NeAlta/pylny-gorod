@@ -52,6 +52,9 @@ class Game {
   final List<GameCard> _held = []; // временно отложенные карты (не видны другим)
   final List<String> log = [];
   final Set<int> waitingOn = {};
+
+  /// Публичная история нападений: «кто в кого» → сколько раз. Нужна ботам.
+  final Map<String, int> aggr = {};
   int cur = 0;
   int turnNo = 0;
   GameOver? result;
@@ -126,7 +129,7 @@ class Game {
                 'char': c.key,
               })
           .toList();
-      final ch = await _choose(p, 'Выберите персонажа', opts,
+      final ch = await _choose(p, 'Выберите персонажа', opts, kind: 'character',
           text: 'Ваша роль: ${p.role.title}. ${p.role.goal}', alwaysAsk: true);
       p.ch = characterDefs[ch.first];
     }));
@@ -187,14 +190,16 @@ class Game {
       final opts = <Json>[
         {'id': 'deck', 'label': 'Обычный добор: 2 карты из колоды'}
       ];
+      final owners = <String, int>{};
       for (final o in _alive()) {
         if (o == p) continue;
         for (final c in o.table) {
           opts.add(_cardOpt(c, label: '${c.label} — у ${o.name}'));
+          owners['c${c.id}'] = o.id;
         }
       }
       if (opts.length > 1) {
-        final ch = await _choose(p, 'Добор', opts, text: 'Можно забрать выложенную карту вместо добора.');
+        final ch = await _choose(p, 'Добор', opts, kind: 'takeInPlay', ctx: {'owners': owners}, text: 'Можно забрать выложенную карту вместо добора.');
         if (ch.first != 'deck') {
           final id = _cid(ch.first);
           for (final o in players) {
@@ -222,7 +227,7 @@ class Game {
         p.hand.addAll(top);
       } else {
         _held.addAll(top); // карты видит только выбирающий
-        final ch = await _choose(p, 'Возьмите 2 карты из 3', top.map((c) => _cardOpt(c)).toList(), min: 2, max: 2);
+        final ch = await _choose(p, 'Возьмите 2 карты из 3', top.map((c) => _cardOpt(c)).toList(), min: 2, max: 2, kind: 'pick');
         _held.removeWhere(top.contains);
         for (final c in top) {
           if (ch.contains('c${c.id}')) {
@@ -252,7 +257,7 @@ class Game {
           }
         }
         if (opts.length > 1) {
-          final ch = await _choose(p, 'Откуда взять первую карту?', opts);
+          final ch = await _choose(p, 'Откуда взять первую карту?', opts, kind: 'firstSource');
           if (ch.first != 'deck') {
             final o = _byId(int.parse(ch.first.substring(1)));
             final c = o.hand.removeAt(rng.nextInt(o.hand.length));
@@ -266,7 +271,7 @@ class Game {
         final ch = await _choose(p, 'Откуда взять первую карту?', [
           {'id': 'deck', 'label': 'Из колоды'},
           _cardOpt(top, label: 'Из сброса: ${top.label}'),
-        ]);
+        ], kind: 'firstSource');
         if (ch.first != 'deck') {
           discard.removeLast();
           p.hand.add(top);
@@ -364,7 +369,7 @@ class Game {
     final excess = p.hand.length - limit;
     if (excess <= 0) return;
     final ch = await _choose(p, 'Сбросьте лишние карты: $excess', p.hand.map((c) => _cardOpt(c)).toList(),
-        min: excess, max: excess);
+        min: excess, max: excess, kind: 'discard');
     for (final id in ch) {
       final c = _findById(p.hand, _cid(id))!;
       p.hand.remove(c);
@@ -499,12 +504,13 @@ class Game {
     final d = c.def;
     if (d.extraCost && p.hand.length > 1) {
       final ch = await _choose(p, 'Сбросьте ещё одну карту за «${d.name}»',
-          p.hand.where((x) => x != c).map((x) => _cardOpt(x)).toList());
+          p.hand.where((x) => x != c).map((x) => _cardOpt(x)).toList(), kind: 'discard');
       final x = _findById(p.hand, _cid(ch.first))!;
       p.hand.remove(x);
       discard.add(x);
     }
     p.hand.remove(c);
+    if (t != null) _noteAttack(p, t, d.isMissedLike ? Eff.shot : d.eff);
     final on = t == null ? '' : ' → ${t.name}';
 
     if (d.color == CardColor.blue) {
@@ -546,6 +552,7 @@ class Game {
   Future<void> _activateGreen(Player p, GameCard c, Player? t) async {
     p.table.remove(c);
     discard.add(c);
+    if (t != null) _noteAttack(p, t, c.def.eff);
     final on = t == null ? '' : ' → ${t.name}';
     _log('${p.name} использует «${c.name}»$on.');
     await _resolve(p, c, t, fromHand: false);
@@ -622,6 +629,7 @@ class Game {
         break;
       case 'doc':
         docUsed = true;
+        _noteAttack(p, t!, Eff.shot);
         await _discardN(p, 2, 'Сбросьте 2 карты для выстрела');
         _log('${p.name} сбрасывает 2 карты и стреляет в ${t!.name}.');
         await _shoot(p, t);
@@ -629,7 +637,7 @@ class Game {
       case 'jose':
         joseUses++;
         final blues = p.hand.where((c) => c.def.color == CardColor.blue).map((c) => _cardOpt(c)).toList();
-        final ch = await _choose(p, 'Какую синюю карту сбросить?', blues);
+        final ch = await _choose(p, 'Какую синюю карту сбросить?', blues, kind: 'discard');
         final c = _findById(p.hand, _cid(ch.first))!;
         p.hand.remove(c);
         discard.add(c);
@@ -640,7 +648,7 @@ class Game {
   }
 
   Future<void> _discardN(Player p, int n, String title) async {
-    final ch = await _choose(p, title, p.hand.map((c) => _cardOpt(c)).toList(), min: n, max: n);
+    final ch = await _choose(p, title, p.hand.map((c) => _cardOpt(c)).toList(), min: n, max: n, kind: 'discard');
     for (final id in ch) {
       final c = _findById(p.hand, _cid(id))!;
       p.hand.remove(c);
@@ -671,7 +679,7 @@ class Game {
       final opts = _missOptions(t);
       if (opts.isEmpty) break;
       final ch = await _choose(t, '${a.name} стреляет в вас!', opts,
-          min: 0, max: 1, text: 'Нужно промахов: $need. Без промаха вы потеряете 1 жизнь.');
+          min: 0, max: 1, kind: 'miss', ctx: {'from': a.id, 'need': need}, text: 'Нужно промахов: $need. Без промаха вы потеряете 1 жизнь.');
       if (ch.isEmpty) break;
       _useMiss(t, ch.first);
       need--;
@@ -721,7 +729,7 @@ class Game {
     final opts = o.hand.where((c) => _isShotLike(o, c)).map((c) => _cardOpt(c)).toList();
     if (opts.isNotEmpty) {
       final ch = await _choose(o, 'Набег!', opts,
-          min: 0, max: 1, text: 'Сбросьте «Выстрел» или потеряйте 1 жизнь.');
+          min: 0, max: 1, kind: 'indians', ctx: {'from': a.id}, text: 'Сбросьте «Выстрел» или потеряйте 1 жизнь.');
       if (ch.isNotEmpty) {
         final c = _findById(o.hand, _cid(ch.first))!;
         o.hand.remove(c);
@@ -744,7 +752,7 @@ class Game {
       List<String> ch = const [];
       if (opts.isNotEmpty) {
         ch = await _choose(turnP, 'Дуэль с ${other.name}', opts,
-            min: 0, max: 1, text: 'Сбросьте «Выстрел» или потеряйте 1 жизнь.');
+            min: 0, max: 1, kind: 'duel', ctx: {'from': other.id}, text: 'Сбросьте «Выстрел» или потеряйте 1 жизнь.');
       }
       if (ch.isEmpty) {
         _log('${turnP.name} проигрывает дуэль.');
@@ -775,7 +783,7 @@ class Game {
     for (final o in [p, ..._clockwiseFrom(p)]) {
       if (storeCards.isEmpty) break;
       if (!o.alive) continue;
-      final ch = await _choose(o, 'Ярмарка: выберите карту', storeCards.map((c) => _cardOpt(c)).toList());
+      final ch = await _choose(o, 'Ярмарка: выберите карту', storeCards.map((c) => _cardOpt(c)).toList(), kind: 'pick');
       final c = _findById(storeCards, _cid(ch.first))!;
       storeCards.remove(c);
       o.hand.add(c);
@@ -793,7 +801,8 @@ class Game {
       opts.add(_cardOpt(c));
     }
     if (opts.isEmpty) return;
-    final ch = await _choose(a, steal ? 'Что забрать у ${t.name}?' : 'Что сбросить у ${t.name}?', opts);
+    final ch = await _choose(a, steal ? 'Что забрать у ${t.name}?' : 'Что сбросить у ${t.name}?', opts,
+        kind: 'take', ctx: {'target': t.id, 'steal': steal});
     final GameCard c;
     final fromHand = ch.first == 'hand';
     if (fromHand) {
@@ -861,7 +870,7 @@ class Game {
       }
       if (opts.isEmpty) break;
       final ch = await _choose(v, 'Вы при смерти!', opts,
-          min: 0, max: 1, text: 'Жизни: ${v.hp}. Спасите себя или выбудьте из игры.');
+          min: 0, max: 1, kind: 'dying', text: 'Жизни: ${v.hp}. Спасите себя или выбудьте из игры.');
       if (ch.isEmpty) break;
       final id = ch.first;
       if (id == 'silas') {
@@ -975,7 +984,8 @@ class Game {
       }
       if (pair.isEmpty) return null;
       discard.addAll(pair);
-      final ch = await _choose(p, 'Проверка ($reason): выберите карту', pair.map((c) => _cardOpt(c)).toList());
+      final ch = await _choose(p, 'Проверка ($reason): выберите карту', pair.map((c) => _cardOpt(c)).toList(),
+          kind: 'check', ctx: {'reason': reason});
       final c = _findById(pair, _cid(ch.first))!;
       _log('${p.name} проверяет ($reason): ${c.label}.');
       return c;
@@ -1051,6 +1061,13 @@ class Game {
     return out;
   }
 
+  void _noteAttack(Player a, Player t, Eff e) {
+    const hostile = {Eff.shot, Eff.steal, Eff.discardTarget, Eff.duel, Eff.jail};
+    if (a == t || !hostile.contains(e)) return;
+    final k = '${a.id}>${t.id}';
+    aggr[k] = (aggr[k] ?? 0) + 1;
+  }
+
   bool _hasInPlay(Player p, String key) => p.table.any((c) => c.key == key);
   GameCard? _inPlay(Player p, String key) => _find(p.table, (c) => c.key == key);
 
@@ -1101,13 +1118,15 @@ class Game {
 
   /// Спросить выбор из списка. Возвращает id выбранных вариантов.
   Future<List<String>> _choose(Player p, String title, List<Json> options,
-      {int min = 1, int max = 1, String? text, bool alwaysAsk = false}) async {
+      {int min = 1, int max = 1, String? text, bool alwaysAsk = false, String kind = 'other', Json? ctx}) async {
     if (options.isEmpty) return const [];
     final ids = options.map((o) => o['id'] as String).toList();
     if (!alwaysAsk && min == ids.length) return ids; // выбора нет
     for (var attempt = 0; attempt < 3; attempt++) {
       final resp = await _ask(p, {
         'type': 'choose',
+        'kind': kind,
+        if (ctx != null) 'ctx': ctx,
         'title': title,
         if (text != null) 'text': text,
         'options': options,
@@ -1161,6 +1180,9 @@ class Game {
       'waiting': waitingOn.toList(),
       'log': log.length > 60 ? log.sublist(log.length - 60) : log,
       'result': result?.toJson(),
+      'aggr': [
+        for (final e in aggr.entries) [...e.key.split('>').map(int.parse), e.value]
+      ],
       'players': [
         for (final p in players)
           {

@@ -5,6 +5,7 @@
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pylny_gorod/engine/bot.dart';
 import 'package:pylny_gorod/engine/game.dart';
 
 Json _randomAnswer(Random rng, Json req) {
@@ -66,4 +67,40 @@ void main() {
       expect(changes, greaterThan(0));
     }
   }, timeout: const Timeout(Duration(minutes: 5))); // 400 партий могут не уложиться в 30 с по умолчанию
+
+  test('партии одних ботов завершаются, и у каждой стороны есть победы', () async {
+    final wins = <String, int>{};
+    for (var seed = 0; seed < 200; seed++) {
+      final expansion = seed.isOdd;
+      final n = 4 + seed % (expansion ? 5 : 4);
+      final players = [for (var i = 0; i < n; i++) Player(i, 'B$i')];
+      final rng = Random(seed);
+      late Game g;
+      g = Game(
+        players: players,
+        expansion: expansion,
+        rng: Random(seed * 13 + 5),
+        ask: (pid, req) async {
+          await Future<void>.delayed(Duration.zero);
+          final r = BotBrain.decide(g.viewFor(pid), req, rng);
+          expect(g.turnNo < 2000, isTrue, reason: 'слишком длинная партия, seed $seed');
+          return r;
+        },
+        onChange: () {
+          if (g.totalCards > 0) expect(g.countCards(), g.totalCards, reason: 'seed $seed');
+        },
+      );
+      final result = await g.run().timeout(const Duration(seconds: 30));
+      final key = result.text.contains('бандиты')
+          ? 'бандиты'
+          : result.text.contains('одиночка')
+              ? 'одиночка'
+              : 'закон';
+      wins[key] = (wins[key] ?? 0) + 1;
+    }
+    // ignore: avoid_print
+    print('Победы ботов: $wins');
+    expect(wins['закон'] ?? 0, greaterThan(0));
+    expect(wins['бандиты'] ?? 0, greaterThan(0));
+  }, timeout: const Timeout(Duration(minutes: 5)));
 }

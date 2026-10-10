@@ -28,13 +28,17 @@ class _HomeScreenState extends State<HomeScreen> {
     return n;
   }
 
-  Future<void> _host() async {
+  /// [bots] — сколько ботов сразу посадить за стол (для игры в одиночку).
+  Future<void> _host({int bots = 0}) async {
     final n = _checkName();
     if (n == null) return;
     setState(() => _busy = true);
     final s = HostSession(n);
     try {
       await s.start();
+      for (var i = 0; i < bots; i++) {
+        s.addBot();
+      }
       if (!mounted) {
         await s.close(); // иначе порт и объявление стола остаются занятыми
         return;
@@ -79,7 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    'Шериф, помощники, бандиты и одиночка.\nИгра для 4–8 человек в одной Wi-Fi сети.',
+                    'Шериф, помощники, бандиты и одиночка.\nИгра для 4–8 человек в одной Wi-Fi сети или с ботами.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Pal.sand),
                   ),
@@ -101,6 +105,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _busy ? null : _join,
                     icon: const Icon(Icons.wifi_find),
                     label: const Text('Присоединиться'),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : () => _host(bots: 4),
+                    icon: const Icon(Icons.smart_toy),
+                    label: const Text('Играть с ботами'),
                   ),
                   const SizedBox(height: 12),
                   TextButton.icon(

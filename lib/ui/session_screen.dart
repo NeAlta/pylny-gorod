@@ -108,11 +108,35 @@ class _SessionScreenState extends State<SessionScreen> {
                         color: Pal.surface,
                         child: ListTile(
                           leading: Icon(
-                            p['id'] == 0 ? Icons.star : Icons.person,
+                            p['id'] == 0
+                                ? Icons.star
+                                : p['bot'] == true
+                                    ? Icons.smart_toy
+                                    : Icons.person,
                             color: p['connected'] == true ? Pal.brass : Pal.sand,
                           ),
                           title: Text('${p['name']}${p['id'] == s.myId ? ' (вы)' : ''}'),
-                          subtitle: p['id'] == 0 ? const Text('хост', style: TextStyle(color: Pal.sand)) : null,
+                          subtitle: p['id'] == 0
+                              ? const Text('хост', style: TextStyle(color: Pal.sand))
+                              : p['bot'] == true
+                                  ? const Text('бот', style: TextStyle(color: Pal.sand))
+                                  : null,
+                          trailing: host != null && p['bot'] == true
+                              ? IconButton(
+                                  tooltip: 'Убрать бота',
+                                  icon: const Icon(Icons.close, color: Pal.sand),
+                                  onPressed: () => host.removeBot(p['id'] as int),
+                                )
+                              : null,
+                        ),
+                      ),
+                    if (host != null && host.canAddBot)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: OutlinedButton.icon(
+                          onPressed: host.addBot,
+                          icon: const Icon(Icons.smart_toy),
+                          label: const Text('Добавить бота'),
                         ),
                       ),
                     const SizedBox(height: 16),
